@@ -1,0 +1,108 @@
+Spark_POC
+
+Aggenda - 
+1. Loading ad_campaigns_data.json, user_profile_data.json and store_data.json files in
+HDFS
+2. Writing PySpark code in Jupyter notebook to solve below mentioned analytical
+problems
+3. Store processed json data of each problem statement into different HDFS output
+directory
+4. Once output data is available into HDFS, create external Hive tables on top of it
+using Json Serde
+
+Q1. Analyse data for each campaign_id, date, hour, os_type & value to get all the
+events with counts
+
+code:---->
+
+from pyspark.sql import SparkSession
+from pyspark.sql.types import *
+from pyspark.sql.functions import *
+from datetime import datetime
+
+# Create Spark session
+spark = SparkSession.builder \
+    .appName("Spark_assignment_1") \
+    .enableHiveSupport() \
+    .getOrCreate()
+    
+hdfs_path="/tmp/input_data/"
+
+ad_camp_data_df=spark.read.format("json").option("multiline", "true").load(hdfs_path+"ad_campaigns_data_new.json")
+store_df=spark.read.format("json").option("multiline", "true").load(hdfs_path+"store_data_new.json")
+user_profile_df=spark.read.format("json").option("multiline", "true").load(hdfs_path+"user_profile_data_new.json")
+
+
+ad_campaigns1=ad_camp_data_df.groupBy("campaign_id",
+                        substring(col("event_time"), 0, 10).alias("date"),
+                        substring(col("event_time"),12, 2).alias("hour"),
+                        col("os_type"),
+                        col("event_type")
+                       ).agg(count("event_type").alias("events"))\
+                        .selectExpr(
+                          "campaign_id",
+                          "date",
+                          "hour",
+                          "'os_type' as type",
+                          "os_type as value",
+                          "struct(event_type, events) as event"
+                          ) \
+                          .groupBy("campaign_id", "date", "hour", "type", "value") \
+                          .agg(collect_list("event").alias("events")) \ #In Apache Spark's SQL and DataFrame API, collect_list is an aggregation function that is used to collect values from a specified column into a list. It is commonly used in conjunction with the groupBy operation to aggregate data based on certain criteria.
+                          .selectExpr(
+                              "campaign_id",
+                              "date",
+                              "hour",
+                              "type",
+                              "value",
+                              "map_from_entries(events) as event"
+                          )
+
+ad_campaigns1.show()
+ad_campaigns1.coalesce(1).write.format('json').save('/tmp/output_data/ad_campaigns/')
+print("Write Successfull")
+
+Q2.Analyse data for each campaign_id, date, hour, store_name & value to get all the
+events with counts
+
+Code:--->
+stores=ad_camp_data_df.join(store_df, array_contains(store_df.place_ids, ad_camp_data_df.place_id),"left")\
+                    .select("campaign_id",
+                            substring("event_time", 0, 10).alias('date'),
+                            substring("event_time", 12, 2).alias('hour'),
+                            lit('store_name').alias("type"),
+                            col("store_name").alias("value"),
+                            "event_type")\
+                            .groupBy("campaign_id", "date", "hour", "type", "value", "event_type")\
+                            .agg(count("event_type").alias("event_count"))\
+                            .select("campaign_id", "date", "hour", "type", "value", struct("event_type", "event_count").alias("events_map"))\
+                            .groupBy("campaign_id", "date", "hour", "type", "value")\
+                            .agg(collect_list("events_map").alias("map_list"))\
+                            .select("campaign_id", "date", "hour", "type", "value", map_from_entries("map_list").alias("event"))
+stores.show()
+#stores.coalesce(1).write.format('json').save('/tmp/output_data/store/')
+#print("Write Successfull")
+
+
+Q3.Analyse data for each campaign_id, date, hour, gender_type & value to get all the
+events with counts
+
+code:-->
+user_profile_df = spark.read.format("json").option("multiline", "true").load(hdfs_path+"user_profile_data_new.json")
+user_profile=ad_camp_data_df.join(user_profile_df, ad_camp_data_df.user_id == user_profile_df.user_id, "left")\
+                            .select("campaign_id",
+                                    substring("event_time", 0, 10).alias("date"),
+                                    substring("event_time", 12, 2).alias("hour"),
+                                    lit('gender').alias("type"),
+                                    col("gender").alias("value"),
+                                    "event_type")\
+                            .groupBy("campaign_id", "date", "hour", "type", "value", "event_type")\
+                            .agg(count("event_type").alias("event_count"))\
+                            .select("campaign_id", "date", "hour", "type", "value", struct("event_type", "event_count").alias("events_map"))\
+                            .groupBy("campaign_id", "date", "hour", "type", "value")\
+                            .agg(collect_list("events_map").alias("map_list"))\
+                            .select("campaign_id", "date", "hour", "type", "value", map_from_entries("map_list").alias("event"))
+                                   
+user_profile.show()
+#stores.coalesce(1).write.format('json').save('/tmp/output_data/user_profile/')
+#print("Write Successfull")
